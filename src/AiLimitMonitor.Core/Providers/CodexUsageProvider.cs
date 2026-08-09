@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AiLimitMonitor.Core.Models;
 
 namespace AiLimitMonitor.Core.Providers;
@@ -7,10 +9,18 @@ namespace AiLimitMonitor.Core.Providers;
 /// Reads the Codex CLI OAuth token from ~/.codex/auth.json and queries the
 /// read-only ChatGPT usage endpoint.
 /// </summary>
-public sealed class CodexUsageProvider(string name, string authPath, HttpClient http, TimeProvider? time = null)
-    : IUsageProvider
+public sealed class CodexUsageProvider(
+    string name, string authPath, HttpClient http, TimeProvider? time = null, string? keepAliveModel = null)
+    : IUsageProvider, IKeepAliveProvider
 {
     public const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
+    public const string ResponsesUrl = "https://chatgpt.com/backend-api/codex/responses";
+
+    /// <summary>Cheapest (mini-tier) Codex model — ChatGPT accounts only accept the slugs the
+    /// Codex CLI itself offers. Overridable per provider via config (keepAliveModel).</summary>
+    public const string DefaultKeepAliveModel = "gpt-5.6-luna";
+
+    public const string HelloText = "Hello，請不要有任何回應";
 
     private readonly TimeProvider _time = time ?? TimeProvider.System;
 
@@ -41,6 +51,98 @@ public sealed class CodexUsageProvider(string name, string authPath, HttpClient 
                 $"HTTP {(int)response.StatusCode} — run `codex` once to refresh the token");
 
         return ParseUsage(name, await response.Content.ReadAsStringAsync(cancellationToken), _time.GetUtcNow());
+    }
+
+    /// <summary>
+    /// Sends a minimal "hello" through the Codex responses endpoint (the same one the Codex
+    /// CLI uses), which starts a fresh 5h window. The endpoint only answers in SSE, so the
+    /// assistant text is re-assembled from the stream for the log.
+    /// </summary>
+    /// <summary>"hello (model=...)" — the log records which model each call used.</summary>
+    private string HelloRequestLabel => $"{HelloText} (model={keepAliveModel ?? DefaultKeepAliveModel})";
+
+    public async Task<KeepAliveResult> SendHelloAsync(CancellationToken cancellationToken)
+    {
+        if (!File.Exists(authPath))
+            return new KeepAliveResult(false, HelloRequestLabel, $"auth file not found: {authPath}");
+
+        string token, accountId;
+        try
+        {
+            (token, accountId) = ReadAuth(await File.ReadAllTextAsync(authPath, cancellationToken));
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException)
+        {
+            return new KeepAliveResult(false, HelloRequestLabel, $"cannot read access token: {ex.Message}");
+        }
+
+        var body = new JsonObject
+        {
+            ["model"] = keepAliveModel ?? DefaultKeepAliveModel,
+            ["instructions"] = "You are Codex, a coding agent running in the Codex CLI.",
+            ["input"] = new JsonArray(new JsonObject
+            {
+                ["type"] = "message",
+                ["role"] = "user",
+                ["content"] = new JsonArray(new JsonObject
+                {
+                    ["type"] = "input_text",
+                    ["text"] = HelloText,
+                }),
+            }),
+            ["reasoning"] = new JsonObject { ["effort"] = "low" },
+            ["tools"] = new JsonArray(),
+            ["tool_choice"] = "auto",
+            ["parallel_tool_calls"] = false,
+            ["store"] = false,
+            ["stream"] = true,
+            ["include"] = new JsonArray(),
+        }.ToJsonString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, ResponsesUrl)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+        request.Headers.TryAddWithoutValidation("chatgpt-account-id", accountId);
+        request.Headers.TryAddWithoutValidation("OpenAI-Beta", "responses=experimental");
+        request.Headers.TryAddWithoutValidation("originator", "codex_cli_rs");
+        request.Headers.TryAddWithoutValidation("session_id", Guid.NewGuid().ToString());
+        request.Headers.TryAddWithoutValidation("Accept", "text/event-stream");
+
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        var summary = response.IsSuccessStatusCode ? ExtractSseText(responseBody) : responseBody;
+        return new KeepAliveResult(response.IsSuccessStatusCode, HelloRequestLabel,
+            $"HTTP {(int)response.StatusCode}: {summary}");
+    }
+
+    /// <summary>Re-assembles the assistant text from SSE output deltas; falls back to the raw body.</summary>
+    public static string ExtractSseText(string sseBody)
+    {
+        var text = new StringBuilder();
+        foreach (var line in sseBody.Split('\n'))
+        {
+            var trimmed = line.TrimEnd('\r');
+            if (!trimmed.StartsWith("data: ", StringComparison.Ordinal))
+                continue;
+            var payload = trimmed["data: ".Length..];
+            if (payload == "[DONE]")
+                break;
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                if (doc.RootElement.TryGetProperty("type", out var type) &&
+                    type.GetString() == "response.output_text.delta" &&
+                    doc.RootElement.TryGetProperty("delta", out var delta) &&
+                    delta.ValueKind == JsonValueKind.String)
+                    text.Append(delta.GetString());
+            }
+            catch (JsonException)
+            {
+            }
+        }
+        return text.Length > 0 ? text.ToString() : sseBody;
     }
 
     public static (string Token, string AccountId) ReadAuth(string authJson)

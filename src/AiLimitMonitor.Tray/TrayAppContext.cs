@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using AiLimitMonitor.Core;
 using AiLimitMonitor.Core.Config;
 using AiLimitMonitor.Core.Models;
+using AiLimitMonitor.Core.Providers;
 using AiLimitMonitor.Core.Rendering;
 
 namespace AiLimitMonitor.Tray;
@@ -14,6 +15,8 @@ internal sealed class TrayAppContext : ApplicationContext
 {
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly UsageMonitorService _service;
+    private readonly KeepAliveService _keepAlive;
+    private readonly MonitorConfig _config;
     private readonly UsageTextRenderer _renderer = new();
     private readonly NotifyIcon _notifyIcon;
     private readonly UsagePopupForm _popup = new();
@@ -21,18 +24,62 @@ internal sealed class TrayAppContext : ApplicationContext
     private MonitorSnapshot? _snapshot;
     private Icon? _currentIcon;
     private bool _fetching;
+    private bool _keepAliveEnabled;
 
     public TrayAppContext()
     {
         _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AiLimitMonitor/1.0");
-        var config = ConfigLoader.LoadOrCreate();
-        _service = new UsageMonitorService(ConfigLoader.BuildProviders(config, _http));
+        _config = ConfigLoader.LoadOrCreate();
+        var providers = ConfigLoader.BuildProviders(_config, _http);
+        _service = new UsageMonitorService(providers);
+        // The log lives next to the executable so users find it without hunting for %USERPROFILE%.
+        var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+        _keepAlive = new KeepAliveService(providers, Path.Combine(exeDir, "keepalive.log"),
+            name => _config.Providers.Find(p => p.Name == name)?.KeepAliveResolved ?? false);
+        _keepAliveEnabled = _config.KeepAliveEnabled;
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("立即更新", null, async (_, _) => await RefreshAsync());
         var petItem = new ToolStripMenuItem("顯示寵物") { Checked = true, CheckOnClick = true };
         petItem.CheckedChanged += (_, _) => _popup.PetEnabled = petItem.Checked;
         menu.Items.Add(petItem);
+        var keepAliveMenu = new ToolStripMenuItem("5h 到期自動 hello（重新起算）");
+        var keepAliveEnableItem = new ToolStripMenuItem("啟用")
+        {
+            Checked = _keepAliveEnabled,
+            CheckOnClick = true,
+        };
+        keepAliveEnableItem.CheckedChanged += async (_, _) =>
+        {
+            _keepAliveEnabled = keepAliveEnableItem.Checked;
+            _config.KeepAliveEnabled = _keepAliveEnabled;
+            ConfigLoader.Save(_config);
+            if (_keepAliveEnabled)
+                await RefreshAsync();
+        };
+        keepAliveMenu.DropDownItems.Add(keepAliveEnableItem);
+        keepAliveMenu.DropDownItems.Add(new ToolStripSeparator());
+        // One checkbox per platform that supports keep-alive; claude accounts are on by default.
+        for (var i = 0; i < providers.Count; i++)
+        {
+            if (providers[i] is not IKeepAliveProvider)
+                continue;
+            var providerConfig = _config.Providers.Find(p => p.Name == providers[i].Name);
+            if (providerConfig is null)
+                continue;
+            var providerItem = new ToolStripMenuItem(providerConfig.Name)
+            {
+                Checked = providerConfig.KeepAliveResolved,
+                CheckOnClick = true,
+            };
+            providerItem.CheckedChanged += (_, _) =>
+            {
+                providerConfig.KeepAlive = providerItem.Checked;
+                ConfigLoader.Save(_config);
+            };
+            keepAliveMenu.DropDownItems.Add(providerItem);
+        }
+        menu.Items.Add(keepAliveMenu);
         var startupItem = new ToolStripMenuItem("開機時自動啟動") { CheckOnClick = true };
         startupItem.CheckedChanged += (_, _) => StartupManager.SetEnabled(startupItem.Checked);
         menu.Items.Add(startupItem);
@@ -53,7 +100,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
         _refreshTimer = new System.Windows.Forms.Timer
         {
-            Interval = (int)TimeSpan.FromSeconds(Math.Max(15, config.RefreshSeconds)).TotalMilliseconds,
+            Interval = (int)TimeSpan.FromSeconds(Math.Max(15, _config.RefreshSeconds)).TotalMilliseconds,
         };
         _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _refreshTimer.Start();
@@ -70,6 +117,9 @@ internal sealed class TrayAppContext : ApplicationContext
         {
             var snapshot = await _service.FetchAsync(CancellationToken.None);
             _snapshot = snapshot;
+
+            if (_keepAliveEnabled)
+                await _keepAlive.CheckAsync(snapshot, CancellationToken.None);
 
             var next = snapshot.NextReset(snapshot.Timestamp);
             var iconText = next is { } reset

@@ -4,6 +4,10 @@ using AiLimitMonitor.Core;
 using AiLimitMonitor.Core.Config;
 using AiLimitMonitor.Core.Rendering;
 
+const string AppTitle = "AI Limit Monitor";
+if (OperatingSystem.IsWindows())
+    Console.Title = AppTitle;
+
 var once = args.Contains("--once");
 var petEnabled = !args.Contains("--no-pet");
 string? configPath = ReadOption(args, "--config");
@@ -41,6 +45,9 @@ if (once)
 }
 
 EnableVirtualTerminal();
+// OSC 0 sets the title in VT terminals (Windows Terminal tabs, ssh, …) where
+// Console.Title alone may not reach the visible tab.
+Console.Write($"\x1b]0;{AppTitle}\x07");
 Console.Write(AnsiFrame.EnterAltScreen);
 Console.WriteLine("AI Limit Monitor — fetching…");
 try

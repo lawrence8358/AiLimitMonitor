@@ -12,11 +12,19 @@ namespace AiLimitMonitor.Core.Providers;
 /// (or the API rejects it) the refresh token is used to obtain a new one, which is persisted
 /// back to .credentials.json exactly like Claude Code itself does.
 /// </summary>
-public sealed class ClaudeUsageProvider(string name, string configDir, HttpClient http, TimeProvider? time = null)
-    : IUsageProvider
+public sealed class ClaudeUsageProvider(
+    string name, string configDir, HttpClient http, TimeProvider? time = null, string? keepAliveModel = null)
+    : IUsageProvider, IKeepAliveProvider
 {
     public const string UsageUrl = "https://api.anthropic.com/api/oauth/usage";
     public const string TokenUrl = "https://console.anthropic.com/v1/oauth/token";
+    public const string MessagesUrl = "https://api.anthropic.com/v1/messages";
+
+    /// <summary>Cheapest model — a keep-alive hello should burn as little quota as possible.
+    /// Overridable per provider via config (keepAliveModel).</summary>
+    public const string DefaultKeepAliveModel = "claude-haiku-4-5-20251001";
+
+    public const string HelloText = "Hello，請不要有任何回應";
 
     /// <summary>Claude Code's public OAuth client id.</summary>
     public const string ClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -82,6 +90,116 @@ public sealed class ClaudeUsageProvider(string name, string configDir, HttpClien
         {
             response.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Sends a minimal "hello" through the Messages API using the same OAuth token, which
+    /// starts a fresh 5h window. OAuth tokens are only accepted when the request presents
+    /// itself as Claude Code, hence the fixed system prompt.
+    /// </summary>
+    /// <summary>"hello (model=...)" — the log records which model each call used.</summary>
+    private string HelloRequestLabel => $"{HelloText} (model={keepAliveModel ?? DefaultKeepAliveModel})";
+
+    public async Task<KeepAliveResult> SendHelloAsync(CancellationToken cancellationToken)
+    {
+        var credentialsPath = Path.Combine(configDir, ".credentials.json");
+        if (!File.Exists(credentialsPath))
+            return new KeepAliveResult(false, HelloRequestLabel, $"credentials not found: {credentialsPath}");
+
+        ClaudeCredentials credentials;
+        try
+        {
+            credentials = ReadCredentials(await File.ReadAllTextAsync(credentialsPath, cancellationToken));
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException)
+        {
+            return new KeepAliveResult(false, HelloRequestLabel, $"cannot read access token: {ex.Message}");
+        }
+
+        var token = credentials.AccessToken;
+        var refreshed = false;
+        if (credentials.IsExpired(_time.GetUtcNow()) && credentials.RefreshToken is not null)
+        {
+            var newToken = await TryRefreshAsync(credentialsPath, credentials.RefreshToken, cancellationToken);
+            if (newToken is not null)
+            {
+                token = newToken;
+                refreshed = true;
+            }
+        }
+
+        var response = await PostHelloAsync(token, cancellationToken);
+        try
+        {
+            if (!response.IsSuccessStatusCode && !refreshed && credentials.RefreshToken is not null)
+            {
+                var newToken = await TryRefreshAsync(credentialsPath, credentials.RefreshToken, cancellationToken);
+                if (newToken is not null)
+                {
+                    response.Dispose();
+                    response = await PostHelloAsync(newToken, cancellationToken);
+                }
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var summary = response.IsSuccessStatusCode ? ExtractAssistantText(body) : body;
+            return new KeepAliveResult(response.IsSuccessStatusCode, HelloRequestLabel,
+                $"HTTP {(int)response.StatusCode}: {summary}");
+        }
+        finally
+        {
+            response.Dispose();
+        }
+    }
+
+    private async Task<HttpResponseMessage> PostHelloAsync(string token, CancellationToken cancellationToken)
+    {
+        var body = new JsonObject
+        {
+            ["model"] = keepAliveModel ?? DefaultKeepAliveModel,
+            ["max_tokens"] = 16,
+            ["system"] = new JsonArray(new JsonObject
+            {
+                ["type"] = "text",
+                ["text"] = "You are Claude Code, Anthropic's official CLI for Claude.",
+            }),
+            ["messages"] = new JsonArray(new JsonObject
+            {
+                ["role"] = "user",
+                ["content"] = HelloText,
+            }),
+        }.ToJsonString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, MessagesUrl)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        // No anthropic-beta header here: /v1/messages rejects "oauth-2021-10-01"
+        // (the usage endpoint still requires it) — verified 2026/08.
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
+        request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        return await http.SendAsync(request, cancellationToken);
+    }
+
+    /// <summary>First text block of a Messages API response, or the raw body when the shape is unexpected.</summary>
+    public static string ExtractAssistantText(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("content", out var content) &&
+                content.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var block in content.EnumerateArray())
+                    if (block.TryGetProperty("text", out var text) &&
+                        text.GetString() is { Length: > 0 } value)
+                        return value;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return json;
     }
 
     private async Task<HttpResponseMessage> GetUsageAsync(string token, CancellationToken cancellationToken)

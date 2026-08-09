@@ -18,11 +18,25 @@ public sealed class ProviderConfig
 
     /// <summary>command: PowerShell command whose stdout is usage JSON.</summary>
     public string? Command { get; set; }
+
+    /// <summary>claude/codex: model used for the keep-alive "hello"; null = built-in default.</summary>
+    public string? KeepAliveModel { get; set; }
+
+    /// <summary>Whether the keep-alive hello targets this provider; null = default (claude only).</summary>
+    public bool? KeepAlive { get; set; }
+
+    /// <summary>Effective keep-alive participation: explicit value, or claude-by-default.</summary>
+    [JsonIgnore]
+    public bool KeepAliveResolved => KeepAlive ?? Type.Equals("claude", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class MonitorConfig
 {
     public int RefreshSeconds { get; set; } = 60;
+
+    /// <summary>When true, an elapsed 5h window triggers an automatic "hello" so the clock restarts.</summary>
+    public bool KeepAliveEnabled { get; set; }
+
     public List<ProviderConfig> Providers { get; set; } = [];
 }
 
@@ -54,6 +68,14 @@ public static class ConfigLoader
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, JsonSerializer.Serialize(config, ConfigJsonContext.Default.MonitorConfig));
         return config;
+    }
+
+    /// <summary>Persists the config (e.g. after toggling keep-alive from the tray menu).</summary>
+    public static void Save(MonitorConfig config, string? path = null)
+    {
+        path ??= DefaultPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, JsonSerializer.Serialize(config, ConfigJsonContext.Default.MonitorConfig));
     }
 
     /// <summary>
@@ -95,10 +117,12 @@ public static class ConfigLoader
             switch (p.Type.ToLowerInvariant())
             {
                 case "claude" when p.ConfigDir is { Length: > 0 }:
-                    providers.Add(new ClaudeUsageProvider(p.Name, ExpandHome(p.ConfigDir), http));
+                    providers.Add(new ClaudeUsageProvider(p.Name, ExpandHome(p.ConfigDir), http,
+                        keepAliveModel: p.KeepAliveModel));
                     break;
                 case "codex" when p.AuthPath is { Length: > 0 }:
-                    providers.Add(new CodexUsageProvider(p.Name, ExpandHome(p.AuthPath), http));
+                    providers.Add(new CodexUsageProvider(p.Name, ExpandHome(p.AuthPath), http,
+                        keepAliveModel: p.KeepAliveModel));
                     break;
                 case "command" when p.Command is { Length: > 0 }:
                     providers.Add(new CommandUsageProvider(p.Name, p.Command));
