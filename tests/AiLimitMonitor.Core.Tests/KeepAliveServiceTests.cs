@@ -120,6 +120,116 @@ public class KeepAliveServiceTests
     }
 
     [Fact]
+    public void FormatLogLine_appends_tokens_and_running_total()
+    {
+        var line = KeepAliveService.FormatLogLine(
+            new DateTimeOffset(2026, 8, 8, 15, 4, 5, TimeSpan.FromHours(8)),
+            "claude",
+            new KeepAliveResult(true, "hello", "HTTP 200: Hi!", new TokenUsage(12, 5)),
+            new TokenUsage(120, 50));
+
+        Assert.Equal(
+            "[2026/08/08 15:04:05 +08:00] claude: hello → HTTP 200: Hi! " +
+            "[tokens in=12 out=5 total=17 | 累計 in=120 out=50 total=170]",
+            line);
+    }
+
+    [Fact]
+    public void FormatLogLine_omits_tokens_when_the_call_reported_none()
+    {
+        // Skips and failures never reach the model — a "0 tokens" note would only mislead.
+        var line = KeepAliveService.FormatLogLine(
+            new DateTimeOffset(2026, 8, 8, 15, 4, 5, TimeSpan.FromHours(8)),
+            "claude",
+            new KeepAliveResult(true, "(skip)", "使用中"));
+
+        Assert.DoesNotContain("tokens", line);
+    }
+
+    [Fact]
+    public void ParseLoggedTokens_reads_back_the_per_call_counts()
+    {
+        var line = KeepAliveService.FormatLogLine(
+            new DateTimeOffset(2026, 8, 8, 15, 4, 5, TimeSpan.FromHours(8)),
+            "claude-5x",
+            new KeepAliveResult(true, "hello (model=x)", "HTTP 200: Hi!", new TokenUsage(12, 5)),
+            new TokenUsage(120, 50));
+
+        var parsed = KeepAliveService.ParseLoggedTokens(line);
+
+        Assert.NotNull(parsed);
+        Assert.Equal("claude-5x", parsed.Value.Provider);
+        // The per-call counts, not the cumulative ones that follow them on the same line.
+        Assert.Equal(new TokenUsage(12, 5), parsed.Value.Tokens);
+    }
+
+    [Fact]
+    public void ParseLoggedTokens_ignores_lines_without_tokens()
+    {
+        Assert.Null(KeepAliveService.ParseLoggedTokens(
+            "[2026/08/08 15:04:05 +08:00] claude: (skip) → 使用中（5h 已用 12%）"));
+        Assert.Null(KeepAliveService.ParseLoggedTokens("garbage"));
+    }
+
+    [Fact]
+    public void TotalTokensFor_sums_previous_runs_from_the_log()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"keepalive-{Guid.NewGuid():N}.log");
+        File.WriteAllLines(path, [
+            "[2026/08/08 15:04:05 +08:00] claude: hello → HTTP 200: Hi! [tokens in=12 out=5 total=17]",
+            "[2026/08/08 20:04:05 +08:00] claude: hello → HTTP 200: Hi! [tokens in=10 out=3 total=13 | 累計 in=22 out=8 total=30]",
+            "[2026/08/08 21:04:05 +08:00] codex: (skip) → 使用中",
+        ], System.Text.Encoding.UTF8);
+        try
+        {
+            var service = new KeepAliveService([], path);
+
+            Assert.Equal(new TokenUsage(22, 8), service.TotalTokensFor("claude"));
+            Assert.Null(service.TotalTokensFor("codex"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ExtractTokenUsage_folds_cache_tokens_into_the_input_side()
+    {
+        const string json = """
+            { "usage": { "input_tokens": 20, "cache_creation_input_tokens": 4,
+                         "cache_read_input_tokens": 6, "output_tokens": 9 } }
+            """;
+
+        Assert.Equal(new TokenUsage(30, 9), ClaudeUsageProvider.ExtractTokenUsage(json));
+    }
+
+    [Fact]
+    public void ExtractTokenUsage_returns_null_without_a_usage_block()
+    {
+        Assert.Null(ClaudeUsageProvider.ExtractTokenUsage("""{ "content": [] }"""));
+        Assert.Null(ClaudeUsageProvider.ExtractTokenUsage("not json"));
+    }
+
+    [Fact]
+    public void ExtractSseTokenUsage_reads_the_completed_event()
+    {
+        const string sse = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n" +
+                           "data: {\"type\":\"response.completed\",\"response\":{\"usage\":" +
+                           "{\"input_tokens\":31,\"output_tokens\":7,\"total_tokens\":38}}}\n\n" +
+                           "data: [DONE]\n";
+
+        Assert.Equal(new TokenUsage(31, 7), CodexUsageProvider.ExtractSseTokenUsage(sse));
+    }
+
+    [Fact]
+    public void ExtractSseTokenUsage_returns_null_when_the_stream_carried_no_usage()
+    {
+        Assert.Null(CodexUsageProvider.ExtractSseTokenUsage(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\ndata: [DONE]\n"));
+    }
+
+    [Fact]
     public void ExtractAssistantText_reads_first_text_block()
     {
         const string json = """

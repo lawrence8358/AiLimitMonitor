@@ -23,7 +23,8 @@ public enum KeepAliveDecision
 /// elapsed and sits at 0% used, so the 5h clock starts counting again immediately. When the
 /// window is not running but shows usage, a skip line is logged instead — otherwise "someone
 /// is using it" would be indistinguishable from "nothing happened". Every action is appended
-/// to a log file as a single tab-separated line: time, provider, request, response.
+/// to a log file as a single line: time, provider, request, response, and — for calls that
+/// actually reached the model — the tokens they burned plus the running total per provider.
 /// </summary>
 public sealed class KeepAliveService(
     IReadOnlyList<IUsageProvider> providers,
@@ -38,7 +39,19 @@ public sealed class KeepAliveService(
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly Dictionary<int, DateTimeOffset> _lastAttempt = [];
 
+    /// <summary>Tokens burned per provider so far. Seeded from the existing log on first write,
+    /// so the running total survives a restart instead of starting over at zero.</summary>
+    private readonly Dictionary<string, TokenUsage> _totals = [];
+    private bool _totalsLoaded;
+
     public string LogPath => logPath;
+
+    /// <summary>Everything this log file has recorded for one provider, or null if it never called it.</summary>
+    public TokenUsage? TotalTokensFor(string providerName)
+    {
+        LoadTotals();
+        return _totals.GetValueOrDefault(providerName);
+    }
 
     public async Task CheckAsync(MonitorSnapshot snapshot, CancellationToken cancellationToken)
     {
@@ -80,7 +93,9 @@ public sealed class KeepAliveService(
                     result = new KeepAliveResult(false, "hello", ex.Message);
                 }
             }
-            AppendLog(now, usage.Name, result);
+            // The configured provider name, not usage.Name: the latter carries a plan suffix
+            // (e.g. "codex (plus)") that would split one account's token total across two keys.
+            AppendLog(now, providers[i].Name, result);
         }
     }
 
@@ -118,7 +133,15 @@ public sealed class KeepAliveService(
 
     private void AppendLog(DateTimeOffset now, string providerName, KeepAliveResult result)
     {
-        var line = FormatLogLine(now.ToLocalTime(), providerName, result);
+        TokenUsage? total = null;
+        if (result.Tokens is { } tokens)
+        {
+            LoadTotals();
+            total = _totals.TryGetValue(providerName, out var previous) ? previous + tokens : tokens;
+            _totals[providerName] = total;
+        }
+
+        var line = FormatLogLine(now.ToLocalTime(), providerName, result, total);
         try
         {
             File.AppendAllText(logPath, line + Environment.NewLine, Encoding.UTF8);
@@ -132,12 +155,85 @@ public sealed class KeepAliveService(
         }
     }
 
-    /// <summary>"[2026/08/08 15:04:05 +08:00] claude: hello → HTTP 200: Hello! …" — always one line.</summary>
-    public static string FormatLogLine(DateTimeOffset localTime, string providerName, KeepAliveResult result)
+    /// <summary>
+    /// "[2026/08/08 15:04:05 +08:00] claude: hello → HTTP 200: Hello! …
+    /// [tokens in=12 out=5 total=17 | 累計 in=120 out=50 total=170]" — always one line.
+    /// The token part is omitted when the platform reported none (skips, failures).
+    /// </summary>
+    public static string FormatLogLine(
+        DateTimeOffset localTime, string providerName, KeepAliveResult result, TokenUsage? cumulative = null)
     {
         var stamp = localTime.ToString("yyyy/MM/dd HH:mm:ss zzz", System.Globalization.CultureInfo.InvariantCulture);
-        return $"[{stamp}] {Sanitize(providerName, 80)}: " +
-               $"{Sanitize(result.RequestContent, 200)} → {Sanitize(result.ResponseContent, 500)}";
+        var line = $"[{stamp}] {Sanitize(providerName, 80)}: " +
+                   $"{Sanitize(result.RequestContent, 200)} → {Sanitize(result.ResponseContent, 500)}";
+        if (result.Tokens is { } tokens)
+            line += $" [tokens {tokens}" + (cumulative is null ? "" : $" | 累計 {cumulative}") + "]";
+        return line;
+    }
+
+    /// <summary>Reads the per-call token counts already written to the log so the running total
+    /// continues across restarts. A missing or unreadable log simply starts the totals at zero.</summary>
+    private void LoadTotals()
+    {
+        if (_totalsLoaded)
+            return;
+        _totalsLoaded = true;
+
+        string[] lines;
+        try
+        {
+            if (!File.Exists(logPath))
+                return;
+            lines = File.ReadAllLines(logPath, Encoding.UTF8);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        foreach (var line in lines)
+        {
+            if (ParseLoggedTokens(line) is not { } entry)
+                continue;
+            _totals[entry.Provider] = _totals.TryGetValue(entry.Provider, out var previous)
+                ? previous + entry.Tokens
+                : entry.Tokens;
+        }
+    }
+
+    /// <summary>Inverse of <see cref="FormatLogLine"/>'s token part: pulls the provider name and
+    /// the per-call counts back out of one log line. Returns null for lines without tokens.</summary>
+    public static (string Provider, TokenUsage Tokens)? ParseLoggedTokens(string line)
+    {
+        var nameStart = line.IndexOf("] ", StringComparison.Ordinal);
+        if (nameStart < 0)
+            return null;
+        nameStart += 2;
+        var nameEnd = line.IndexOf(':', nameStart);
+        if (nameEnd <= nameStart)
+            return null;
+
+        var marker = line.LastIndexOf(" [tokens ", StringComparison.Ordinal);
+        if (marker < 0)
+            return null;
+        var input = ReadCount(line, marker, "in=");
+        var output = ReadCount(line, marker, "out=");
+        if (input is null || output is null)
+            return null;
+
+        return (line[nameStart..nameEnd], new TokenUsage(input.Value, output.Value));
+
+        static long? ReadCount(string line, int from, string key)
+        {
+            var at = line.IndexOf(key, from, StringComparison.Ordinal);
+            if (at < 0)
+                return null;
+            at += key.Length;
+            var end = at;
+            while (end < line.Length && char.IsAsciiDigit(line[end]))
+                end++;
+            return end > at && long.TryParse(line[at..end], out var value) ? value : null;
+        }
     }
 
     /// <summary>Collapses all whitespace runs (incl. newlines/tabs) to one space and truncates.</summary>

@@ -21,14 +21,15 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly NotifyIcon _notifyIcon;
     private readonly UsagePopupForm _popup = new();
     private readonly System.Windows.Forms.Timer _refreshTimer;
+    private readonly System.Windows.Forms.Timer _instanceTimer;
     private MonitorSnapshot? _snapshot;
     private Icon? _currentIcon;
     private bool _fetching;
     private bool _keepAliveEnabled;
 
-    public TrayAppContext()
+    public TrayAppContext(SingleInstance instance)
     {
-        _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AiLimitMonitor/1.0");
+        _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AiLimitMonitor/1.1");
         _config = ConfigLoader.LoadOrCreate();
         var providers = ConfigLoader.BuildProviders(_config, _http);
         _service = new UsageMonitorService(providers);
@@ -77,6 +78,14 @@ internal sealed class TrayAppContext : ApplicationContext
                 providerConfig.KeepAlive = providerItem.Checked;
                 ConfigLoader.Save(_config);
             };
+            // How much quota the helloes have burned so far, refreshed each time the menu opens.
+            keepAliveMenu.DropDownOpening += (_, _) =>
+            {
+                var total = _keepAlive.TotalTokensFor(providerConfig.Name);
+                providerItem.Text = total is null
+                    ? providerConfig.Name
+                    : $"{providerConfig.Name}（累計 token 輸入 {total.InputTokens:N0}／輸出 {total.OutputTokens:N0}）";
+            };
             keepAliveMenu.DropDownItems.Add(providerItem);
         }
         menu.Items.Add(keepAliveMenu);
@@ -104,6 +113,19 @@ internal sealed class TrayAppContext : ApplicationContext
         };
         _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _refreshTimer.Start();
+
+        // A second launch cannot open its own icon, so it hands the request over to us: show
+        // where the running one lives instead of appearing to do nothing.
+        _instanceTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _instanceTimer.Tick += (_, _) =>
+        {
+            if (!instance.WasLaunchAttempted())
+                return;
+            _notifyIcon.ShowBalloonTip(3000, "AI Limit Monitor",
+                "已經在執行中，圖示就在系統匣裡。", ToolTipIcon.Info);
+            ShowPopup();
+        };
+        _instanceTimer.Start();
 
         _ = RefreshAsync();
     }
@@ -169,6 +191,8 @@ internal sealed class TrayAppContext : ApplicationContext
 
     protected override void ExitThreadCore()
     {
+        _instanceTimer.Stop();
+        _instanceTimer.Dispose();
         _refreshTimer.Stop();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();

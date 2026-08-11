@@ -144,7 +144,8 @@ public sealed class ClaudeUsageProvider(
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             var summary = response.IsSuccessStatusCode ? ExtractAssistantText(body) : body;
             return new KeepAliveResult(response.IsSuccessStatusCode, HelloRequestLabel,
-                $"HTTP {(int)response.StatusCode}: {summary}");
+                $"HTTP {(int)response.StatusCode}: {summary}",
+                response.IsSuccessStatusCode ? ExtractTokenUsage(body) : null);
         }
         finally
         {
@@ -200,6 +201,36 @@ public sealed class ClaudeUsageProvider(
         {
         }
         return json;
+    }
+
+    /// <summary>
+    /// Reads usage.{input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+    /// output_tokens} from a Messages API response. Returns null when the body has no usage
+    /// block (error payloads, unexpected shapes).
+    /// </summary>
+    public static TokenUsage? ExtractTokenUsage(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("usage", out var usage) ||
+                usage.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var input = Number(usage, "input_tokens")
+                        + Number(usage, "cache_creation_input_tokens")
+                        + Number(usage, "cache_read_input_tokens");
+            return new TokenUsage(input, Number(usage, "output_tokens"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        static long Number(JsonElement el, string property) =>
+            el.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number
+                ? value.GetInt64()
+                : 0;
     }
 
     private async Task<HttpResponseMessage> GetUsageAsync(string token, CancellationToken cancellationToken)

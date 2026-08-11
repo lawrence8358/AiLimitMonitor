@@ -114,7 +114,8 @@ public sealed class CodexUsageProvider(
         var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
         var summary = response.IsSuccessStatusCode ? ExtractSseText(responseBody) : responseBody;
         return new KeepAliveResult(response.IsSuccessStatusCode, HelloRequestLabel,
-            $"HTTP {(int)response.StatusCode}: {summary}");
+            $"HTTP {(int)response.StatusCode}: {summary}",
+            response.IsSuccessStatusCode ? ExtractSseTokenUsage(responseBody) : null);
     }
 
     /// <summary>Re-assembles the assistant text from SSE output deltas; falls back to the raw body.</summary>
@@ -143,6 +144,42 @@ public sealed class CodexUsageProvider(
             }
         }
         return text.Length > 0 ? text.ToString() : sseBody;
+    }
+
+    /// <summary>
+    /// Reads response.usage.{input_tokens, output_tokens} from the terminal "response.completed"
+    /// SSE event (reasoning tokens are already part of output_tokens). Returns null when the
+    /// stream carried no usage — e.g. it was cut short.
+    /// </summary>
+    public static TokenUsage? ExtractSseTokenUsage(string sseBody)
+    {
+        foreach (var line in sseBody.Split('\n'))
+        {
+            var trimmed = line.TrimEnd('\r');
+            if (!trimmed.StartsWith("data: ", StringComparison.Ordinal))
+                continue;
+            var payload = trimmed["data: ".Length..];
+            if (payload == "[DONE]")
+                break;
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                if (!doc.RootElement.TryGetProperty("response", out var response) ||
+                    !response.TryGetProperty("usage", out var usage) ||
+                    usage.ValueKind != JsonValueKind.Object)
+                    continue;
+                return new TokenUsage(Number(usage, "input_tokens"), Number(usage, "output_tokens"));
+            }
+            catch (JsonException)
+            {
+            }
+        }
+        return null;
+
+        static long Number(JsonElement el, string property) =>
+            el.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number
+                ? value.GetInt64()
+                : 0;
     }
 
     public static (string Token, string AccountId) ReadAuth(string authJson)

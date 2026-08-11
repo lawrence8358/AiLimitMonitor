@@ -1,6 +1,6 @@
 # AI Limit Monitor
 
-隨時掌握 Claude Code 與 Codex CLI 還剩多少額度的小工具（目前版本 1.0.0），有兩種用法：
+隨時掌握 Claude Code 與 Codex CLI 還剩多少額度的小工具（目前版本 1.1.0），有兩種用法：
 
 - **終端機版**：開一個視窗持續顯示各帳號的剩餘額度
 - **桌面版**：縮在螢幕右下角時鐘旁邊的小圖示，滑鼠移上去就能看，不佔位置
@@ -17,6 +17,13 @@ Claude 的「5 小時額度」有個特性：**從你送出第一句話才開始
 - 期滿但看得出有人在用（使用率大於 0%）就不打擾，只在紀錄檔寫下當時的使用率，讓你知道「為什麼這次沒有呼叫」
 - 想讓哪些帳號自動 hello 可以逐一勾選，預設只勾 Claude；像 codex team 這種只有每週額度、沒有 5 小時限制的方案，永遠不會被呼叫
 - 每次呼叫（或略過）都會寫進 `ailimit-tray.exe` 所在資料夾的 `keepalive.log`，一行一筆：時間、帳號、送了什麼（含使用的 AI 模型）、對方回了什麼，成功失敗都看得到
+- 真的送出去的呼叫還會記下**這次花了多少 token**，以及該帳號**至今累計花掉多少**（重開程式也會從紀錄檔接續，不會歸零）：
+
+  ```text
+  [2026/08/11 20:20:22 +08:00] claude: Hello，請不要有任何回應 (model=claude-haiku-4-5-20251001) → HTTP 200: 我理解了。 [tokens in=28 out=12 total=40 | 累計 in=196 out=84 total=280]
+  ```
+
+  累計數字也直接顯示在右鍵選單的帳號勾選項後面，不用翻紀錄檔就看得到
 - 所有勾選都會記住，下次開啟不用重設；同一帳號 10 分鐘內不會重複呼叫
 - 任一額度已用滿 100%（例如每週額度用完）時自動暫停，不做白工
 
@@ -61,6 +68,7 @@ Claude 的「5 小時額度」有個特性：**從你送出第一句話才開始
   - `5h 到期自動 hello（重新起算）` — 額度計時自動重啟（詳見上方功能亮點），可逐帳號勾選
   - `開機時自動啟動` — 登入 Windows 後自動執行
   - `結束` — 關閉程式
+- **只會有一個圖示**：已經在執行時再點一次執行檔（或開機自動啟動與手動開啟撞在一起），不會多開一個，而是提示你圖示的位置並彈出額度資訊
 
 ![桌面版功能畫面](docs/screenshot-desktop-features.png)
 
@@ -170,7 +178,7 @@ dotnet run --project src/AiLimitMonitor.Tray
 | `keepAlive` | provider | claude 為 `true`、其他為 `false` | 該帳號是否參與自動 hello，等同子選單的帳號勾選；省略時採用預設值 |
 | `keepAliveModel` | provider | claude：`claude-haiku-4-5-20251001`<br>codex：`gpt-5.6-luna` | 送 hello 時使用的模型，預設挑最便宜的。日後模型更名導致呼叫失敗時（`keepalive.log` 的回應欄看得到錯誤），改這個欄位即可，不用等程式更新。codex 只能填 ChatGPT 帳號可用的 Codex 模型代號（可參考 `~/.codex/models_cache.json` 的 `slug` 清單） |
 
-實作細節：Claude 的 hello 走 `POST https://api.anthropic.com/v1/messages`（OAuth token、`max_tokens: 32`，不能帶 `anthropic-beta: oauth-2021-10-01`，usage 端點則相反）；Codex 走 Codex CLI 的 `POST https://chatgpt.com/backend-api/codex/responses`（SSE、low reasoning）。觸發判斷（0% 才呼叫、100% 暫停、10 分鐘冷卻）在 `src/AiLimitMonitor.Core/KeepAliveService.cs`，紀錄檔固定寫在執行檔所在目錄的 `keepalive.log`。
+實作細節：Claude 的 hello 走 `POST https://api.anthropic.com/v1/messages`（OAuth token、`max_tokens: 16`，不能帶 `anthropic-beta: oauth-2021-10-01`，usage 端點則相反）；Codex 走 Codex CLI 的 `POST https://chatgpt.com/backend-api/codex/responses`（SSE、low reasoning）。觸發判斷（0% 才呼叫、100% 暫停、10 分鐘冷卻）在 `src/AiLimitMonitor.Core/KeepAliveService.cs`，紀錄檔固定寫在執行檔所在目錄的 `keepalive.log`。
 
 ### 資料來源
 
