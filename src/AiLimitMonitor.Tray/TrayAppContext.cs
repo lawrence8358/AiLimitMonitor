@@ -16,6 +16,7 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private readonly UsageMonitorService _service;
     private readonly KeepAliveService _keepAlive;
+    private readonly KeepAliveSchedule _keepAliveSchedule;
     private readonly MonitorConfig _config;
     private readonly UsageTextRenderer _renderer = new();
     private readonly NotifyIcon _notifyIcon;
@@ -33,10 +34,13 @@ internal sealed class TrayAppContext : ApplicationContext
         _config = ConfigLoader.LoadOrCreate();
         var providers = ConfigLoader.BuildProviders(_config, _http);
         _service = new UsageMonitorService(providers);
+        _keepAliveSchedule = new KeepAliveSchedule();
+        _keepAliveSchedule.Update(_config.KeepAliveSchedule);
         // The log lives next to the executable so users find it without hunting for %USERPROFILE%.
         var exeDir = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
         _keepAlive = new KeepAliveService(providers, Path.Combine(exeDir, "keepalive.log"),
-            name => _config.Providers.Find(p => p.Name == name)?.KeepAliveResolved ?? false);
+            name => _config.Providers.Find(p => p.Name == name)?.KeepAliveResolved ?? false,
+            schedule: _keepAliveSchedule);
         _keepAliveEnabled = _config.KeepAliveEnabled;
 
         var menu = new ContextMenuStrip();
@@ -59,6 +63,21 @@ internal sealed class TrayAppContext : ApplicationContext
                 await RefreshAsync();
         };
         keepAliveMenu.DropDownItems.Add(keepAliveEnableItem);
+        var scheduleItem = new ToolStripMenuItem(ScheduleMenuText());
+        scheduleItem.Click += async (_, _) =>
+        {
+            using var form = new KeepAliveScheduleForm(_config.KeepAliveSchedule);
+            if (form.ShowDialog() != DialogResult.OK)
+                return;
+
+            _config.KeepAliveSchedule = form.SelectedSchedule;
+            _keepAliveSchedule.Update(_config.KeepAliveSchedule);
+            ConfigLoader.Save(_config);
+            scheduleItem.Text = ScheduleMenuText();
+            if (_keepAliveEnabled)
+                await RefreshAsync();
+        };
+        keepAliveMenu.DropDownItems.Add(scheduleItem);
         keepAliveMenu.DropDownItems.Add(new ToolStripSeparator());
         // One checkbox per platform that supports keep-alive; claude accounts are on by default.
         for (var i = 0; i < providers.Count; i++)
@@ -175,6 +194,10 @@ internal sealed class TrayAppContext : ApplicationContext
         var text = _snapshot is { } snapshot ? _renderer.Render(snapshot) : "loading…";
         _popup.ShowNear(Cursor.Position, text);
     }
+
+    private string ScheduleMenuText() => _config.KeepAliveSchedule is { } schedule
+        ? $"允許呼叫時段…（已設定 {schedule.Rules.Count} 個）"
+        : "允許呼叫時段…（不限）";
 
     private Icon SetIcon(Icon icon)
     {

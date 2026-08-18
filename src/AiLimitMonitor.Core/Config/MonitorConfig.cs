@@ -30,12 +30,30 @@ public sealed class ProviderConfig
     public bool KeepAliveResolved => KeepAlive ?? Type.Equals("claude", StringComparison.OrdinalIgnoreCase);
 }
 
+/// <summary>Global local-time windows during which keep-alive calls may be made.</summary>
+public sealed class KeepAliveScheduleConfig
+{
+    public List<KeepAliveScheduleRuleConfig> Rules { get; set; } = [];
+}
+
+/// <summary>One inclusive/exclusive keep-alive window. Overnight windows use Days as the
+/// day on which the window starts.</summary>
+public sealed class KeepAliveScheduleRuleConfig
+{
+    public List<DayOfWeek> Days { get; set; } = [];
+    public string Start { get; set; } = "";
+    public string End { get; set; } = "";
+}
+
 public sealed class MonitorConfig
 {
     public int RefreshSeconds { get; set; } = 60;
 
     /// <summary>When true, an elapsed 5h window triggers an automatic "hello" so the clock restarts.</summary>
     public bool KeepAliveEnabled { get; set; }
+
+    /// <summary>Optional local-time restrictions for keep-alive calls. Null means unrestricted.</summary>
+    public KeepAliveScheduleConfig? KeepAliveSchedule { get; set; }
 
     public List<ProviderConfig> Providers { get; set; } = [];
 }
@@ -45,6 +63,7 @@ public sealed class MonitorConfig
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     PropertyNameCaseInsensitive = true,
+    UseStringEnumConverter = true,
     WriteIndented = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(MonitorConfig))]

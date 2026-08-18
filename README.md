@@ -16,6 +16,7 @@ Claude 的「5 小時額度」有個特性：**從你送出第一句話才開始
 - 發現某個帳號的 5 小時額度已期滿、而且完全沒人在用（使用率 0%），就自動送出一句 `hello`，讓新的 5 小時立刻開始倒數
 - 期滿但看得出有人在用（使用率大於 0%）就不打擾，只在紀錄檔寫下當時的使用率，讓你知道「為什麼這次沒有呼叫」
 - 想讓哪些帳號自動 hello 可以逐一勾選，預設只勾 Claude；像 codex team 這種只有每週額度、沒有 5 小時限制的方案，永遠不會被呼叫
+- 可設定允許呼叫的星期與多個時間區間，例如平日 `09:00～18:00`、`20:00～21:30`；區間外仍會正常監控使用量，但不會送出 hello
 - 每次呼叫（或略過）都會寫進 `ailimit-tray.exe` 所在資料夾的 `keepalive.log`，一行一筆：時間、帳號、送了什麼（含使用的 AI 模型）、對方回了什麼，成功失敗都看得到
 - 真的送出去的呼叫還會記下**這次花了多少 token**，以及該帳號**至今累計花掉多少**（重開程式也會從紀錄檔接續，不會歸零）：
 
@@ -65,7 +66,7 @@ Claude 的「5 小時額度」有個特性：**從你送出第一句話才開始
 - **右鍵選單**：
   - `立即更新` — 馬上重新查詢一次
   - `顯示寵物` — 開關資訊視窗邊框上跑來跑去的小寵物 🐹
-  - `5h 到期自動 hello（重新起算）` — 額度計時自動重啟（詳見上方功能亮點），可逐帳號勾選
+  - `5h 到期自動 hello（重新起算）` — 額度計時自動重啟（詳見上方功能亮點），可逐帳號勾選，並設定允許呼叫的星期與時段
   - `開機時自動啟動` — 登入 Windows 後自動執行
   - `結束` — 關閉程式
 - **只會有一個圖示**：已經在執行時再點一次執行檔（或開機自動啟動與手動開啟撞在一起），不會多開一個，而是提示你圖示的位置並彈出額度資訊
@@ -163,6 +164,20 @@ dotnet run --project src/AiLimitMonitor.Tray
 {
   "refreshSeconds": 60,
   "keepAliveEnabled": true,
+  "keepAliveSchedule": {
+    "rules": [
+      {
+        "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "start": "09:00",
+        "end": "18:00"
+      },
+      {
+        "days": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+        "start": "20:00",
+        "end": "21:30"
+      }
+    ]
+  },
   "providers": [
     { "type": "claude", "name": "claude", "configDir": "~/.claude",
       "keepAlive": true, "keepAliveModel": "claude-haiku-4-5-20251001" },
@@ -175,10 +190,15 @@ dotnet run --project src/AiLimitMonitor.Tray
 | 欄位 | 位置 | 預設值 | 說明 |
 |---|---|---|---|
 | `keepAliveEnabled` | 根層級 | `false` | 總開關，等同右鍵選單的「啟用」 |
+| `keepAliveSchedule` | 根層級 | 不限時段 | 全部帳號共用的允許呼叫時段；省略或設為 `null` 代表全天允許。桌面版可由「允許呼叫時段」開啟設定視窗 |
+| `keepAliveSchedule.rules[].days` | 排程規則 | — | 規則適用的星期，可複選；跨日時代表區間開始的星期 |
+| `keepAliveSchedule.rules[].start` / `end` | 排程規則 | — | 本機時間的 `HH:mm`。開始時間包含、結束時間不包含；結束早於開始代表跨日，例如星期五 `22:00～02:00` 會延續至星期六凌晨 |
 | `keepAlive` | provider | claude 為 `true`、其他為 `false` | 該帳號是否參與自動 hello，等同子選單的帳號勾選；省略時採用預設值 |
 | `keepAliveModel` | provider | claude：`claude-haiku-4-5-20251001`<br>codex：`gpt-5.6-luna` | 送 hello 時使用的模型，預設挑最便宜的。日後模型更名導致呼叫失敗時（`keepalive.log` 的回應欄看得到錯誤），改這個欄位即可，不用等程式更新。codex 只能填 ChatGPT 帳號可用的 Codex 模型代號（可參考 `~/.codex/models_cache.json` 的 `slug` 清單） |
 
-實作細節：Claude 的 hello 走 `POST https://api.anthropic.com/v1/messages`（OAuth token、`max_tokens: 16`，不能帶 `anthropic-beta: oauth-2021-10-01`，usage 端點則相反）；Codex 走 Codex CLI 的 `POST https://chatgpt.com/backend-api/codex/responses`（SSE、low reasoning）。觸發判斷（0% 才呼叫、100% 暫停、10 分鐘冷卻）在 `src/AiLimitMonitor.Core/KeepAliveService.cs`，紀錄檔固定寫在執行檔所在目錄的 `keepalive.log`。
+多條排程規則採 OR 判斷，符合任一條就允許呼叫。時間依 Windows 本機時區判斷；這項限制只控制 hello，使用量查詢仍依 `refreshSeconds` 持續執行，因此進入允許區間後會在下一次刷新時判斷，而不是保證整點立刻呼叫。
+
+實作細節：Claude 的 hello 走 `POST https://api.anthropic.com/v1/messages`（OAuth token、`max_tokens: 16`，不能帶 `anthropic-beta: oauth-2021-10-01`，usage 端點則相反）；Codex 走 Codex CLI 的 `POST https://chatgpt.com/backend-api/codex/responses`（SSE、low reasoning）。觸發判斷（允許時段、0% 才呼叫、100% 暫停、10 分鐘冷卻）在 `src/AiLimitMonitor.Core/KeepAliveService.cs`，紀錄檔固定寫在執行檔所在目錄的 `keepalive.log`。
 
 ### 資料來源
 

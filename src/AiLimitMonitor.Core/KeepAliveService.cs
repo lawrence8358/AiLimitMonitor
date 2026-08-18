@@ -30,13 +30,15 @@ public sealed class KeepAliveService(
     IReadOnlyList<IUsageProvider> providers,
     string logPath,
     Func<string, bool>? providerFilter = null,
-    TimeProvider? time = null)
+    TimeProvider? time = null,
+    KeepAliveSchedule? schedule = null)
 {
     /// <summary>Minimum gap between two hello attempts for the same provider — the usage
     /// endpoint can lag behind a just-sent hello and would otherwise trigger a resend.</summary>
     public static readonly TimeSpan Cooldown = TimeSpan.FromMinutes(10);
 
     private readonly TimeProvider _time = time ?? TimeProvider.System;
+    private readonly KeepAliveSchedule _schedule = schedule ?? new KeepAliveSchedule();
     private readonly Dictionary<int, DateTimeOffset> _lastAttempt = [];
 
     /// <summary>Tokens burned per provider so far. Seeded from the existing log on first write,
@@ -65,6 +67,8 @@ public sealed class KeepAliveService(
 
             var usage = snapshot.Providers[i];
             var now = _time.GetUtcNow();
+            if (!_schedule.IsAllowed(now))
+                continue;
             var decision = Evaluate(usage, now, out var usedPercent);
             if (decision == KeepAliveDecision.None)
                 continue;

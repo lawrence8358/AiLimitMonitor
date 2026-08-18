@@ -48,6 +48,52 @@ public class ConfigLoaderTests : IDisposable
     }
 
     [Fact]
+    public void Save_round_trips_schedule_and_writes_day_names()
+    {
+        var configPath = Path.Combine(_tempDir, "config.json");
+        var config = new MonitorConfig
+        {
+            KeepAliveSchedule = new KeepAliveScheduleConfig
+            {
+                Rules =
+                [
+                    new KeepAliveScheduleRuleConfig
+                    {
+                        Days = [DayOfWeek.Sunday, DayOfWeek.Monday],
+                        Start = "23:00",
+                        End = "01:00",
+                    },
+                ],
+            },
+        };
+
+        ConfigLoader.Save(config, configPath);
+        var json = File.ReadAllText(configPath);
+        var loaded = ConfigLoader.LoadOrCreate(configPath);
+
+        Assert.Contains("\"days\"", json);
+        Assert.Contains("\"Sunday\"", json);
+        Assert.Contains("\"Monday\"", json);
+        Assert.DoesNotContain("\"days\": [\n        0", json.Replace("\r\n", "\n"));
+        Assert.Equal([DayOfWeek.Sunday, DayOfWeek.Monday],
+            loaded.KeepAliveSchedule!.Rules[0].Days);
+        Assert.Equal("23:00", loaded.KeepAliveSchedule.Rules[0].Start);
+        Assert.Equal("01:00", loaded.KeepAliveSchedule.Rules[0].End);
+    }
+
+    [Fact]
+    public void LoadOrCreate_missing_schedule_remains_null_for_back_compatibility()
+    {
+        var configPath = Path.Combine(_tempDir, "legacy.json");
+        File.WriteAllText(configPath, "{ \"refreshSeconds\": 30, \"providers\": [] }");
+
+        var loaded = ConfigLoader.LoadOrCreate(configPath);
+
+        Assert.Null(loaded.KeepAliveSchedule);
+        Assert.Equal(30, loaded.RefreshSeconds);
+    }
+
+    [Fact]
     public void BuildProviders_creates_matching_provider_types()
     {
         var config = new MonitorConfig
