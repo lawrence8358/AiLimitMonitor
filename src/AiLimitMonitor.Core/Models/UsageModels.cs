@@ -3,12 +3,19 @@ namespace AiLimitMonitor.Core.Models;
 /// <summary>One rate-limit window, e.g. "5h" or "weekly".</summary>
 public sealed record UsageWindow(string Label, double UsedPercent, DateTimeOffset? ResetsAt);
 
+/// <summary>One available Codex rate-limit reset credit and its optional expiration.</summary>
+public sealed record ResetCredit(DateTimeOffset? ExpiresAt);
+
+/// <summary>Summary and optional details for available Codex rate-limit reset credits.</summary>
+public sealed record ResetCredits(int AvailableCount, IReadOnlyList<ResetCredit>? Credits = null);
+
 /// <summary>Usage result for a single provider (one account).</summary>
 public sealed record ProviderUsage(
     string Name,
     IReadOnlyList<UsageWindow> Windows,
     IReadOnlyList<string> Notes,
-    string? Error = null)
+    string? Error = null,
+    ResetCredits? ResetCredits = null)
 {
     public static ProviderUsage Failed(string name, string error) => new(name, [], [], error);
 }

@@ -153,8 +153,10 @@ public class ProviderFetchTests : IDisposable
             """{ "tokens": { "access_token": "tok", "account_id": "acc-1" } }""");
 
         HttpRequestMessage? captured = null;
+        var requestCount = 0;
         using var http = new HttpClient(new FakeHandler(request =>
         {
+            requestCount++;
             captured = request;
             return Respond(HttpStatusCode.OK, """
                 {
@@ -172,6 +174,111 @@ public class ProviderFetchTests : IDisposable
         Assert.Null(usage.Error);
         Assert.Equal("codex (plus)", usage.Name);
         Assert.Equal("acc-1", captured!.Headers.GetValues("chatgpt-account-id").Single());
+        Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task Codex_fetch_loads_reset_credit_expiration_with_same_auth_headers()
+    {
+        var authPath = Path.Combine(_tempDir, "auth.json");
+        File.WriteAllText(authPath,
+            """{ "tokens": { "access_token": "tok", "account_id": "acc-1" } }""");
+
+        var requests = new List<(string Url, string Authorization, string AccountId)>();
+        using var http = new HttpClient(new FakeHandler(request =>
+        {
+            requests.Add((request.RequestUri!.ToString(),
+                request.Headers.GetValues("Authorization").Single(),
+                request.Headers.GetValues("chatgpt-account-id").Single()));
+            return request.RequestUri!.ToString() == CodexUsageProvider.UsageUrl
+                ? Respond(HttpStatusCode.OK, """
+                    {
+                      "rate_limit": {
+                        "primary_window": { "used_percent": 24, "limit_window_seconds": 18000 }
+                      },
+                      "rate_limit_reset_credits": { "available_count": 1 }
+                    }
+                    """)
+                : Respond(HttpStatusCode.OK, """
+                    {
+                      "available_count": 1,
+                      "credits": [
+                        { "status": "available", "expires_at": "2026-09-17T00:00:00Z" }
+                      ]
+                    }
+                    """);
+        }));
+
+        var usage = await new CodexUsageProvider("codex", authPath, http)
+            .FetchAsync(CancellationToken.None);
+
+        Assert.Null(usage.Error);
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(CodexUsageProvider.UsageUrl, requests[0].Url);
+        Assert.Equal(CodexUsageProvider.ResetCreditsUrl, requests[1].Url);
+        Assert.All(requests, request =>
+        {
+            Assert.Equal("Bearer tok", request.Authorization);
+            Assert.Equal("acc-1", request.AccountId);
+        });
+        var credit = Assert.Single(usage.ResetCredits!.Credits!);
+        Assert.Equal(new DateTimeOffset(2026, 9, 17, 0, 0, 0, TimeSpan.Zero), credit.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task Codex_fetch_keeps_usage_when_reset_credit_details_fail()
+    {
+        var authPath = Path.Combine(_tempDir, "auth.json");
+        File.WriteAllText(authPath,
+            """{ "tokens": { "access_token": "tok", "account_id": "acc-1" } }""");
+
+        using var http = new HttpClient(new FakeHandler(request =>
+            request.RequestUri!.ToString() == CodexUsageProvider.UsageUrl
+                ? Respond(HttpStatusCode.OK, """
+                    {
+                      "rate_limit": {
+                        "primary_window": { "used_percent": 24, "limit_window_seconds": 18000 }
+                      },
+                      "rate_limit_reset_credits": { "available_count": 1 }
+                    }
+                    """)
+                : Respond(HttpStatusCode.TooManyRequests, "{}")));
+
+        var usage = await new CodexUsageProvider("codex", authPath, http)
+            .FetchAsync(CancellationToken.None);
+
+        Assert.Null(usage.Error);
+        Assert.Single(usage.Windows);
+        Assert.Equal(1, usage.ResetCredits!.AvailableCount);
+        Assert.Null(usage.ResetCredits.Credits);
+    }
+
+    [Fact]
+    public async Task Codex_fetch_ignores_invalid_reset_credit_numbers()
+    {
+        var authPath = Path.Combine(_tempDir, "auth.json");
+        File.WriteAllText(authPath,
+            """{ "tokens": { "access_token": "tok", "account_id": "acc-1" } }""");
+
+        using var http = new HttpClient(new FakeHandler(request =>
+            request.RequestUri!.ToString() == CodexUsageProvider.UsageUrl
+                ? Respond(HttpStatusCode.OK,
+                    """{ "rate_limit_reset_credits": { "available_count": 1 } }""")
+                : Respond(HttpStatusCode.OK, """
+                    {
+                      "available_count": 999999999999999999999,
+                      "credits": [
+                        { "status": "available", "expires_at": 999999999999999999999 }
+                      ]
+                    }
+                    """)));
+
+        var usage = await new CodexUsageProvider("codex", authPath, http)
+            .FetchAsync(CancellationToken.None);
+
+        Assert.Null(usage.Error);
+        Assert.Equal(1, usage.ResetCredits!.AvailableCount);
+        Assert.Empty(usage.ResetCredits.Credits!);
     }
 
     [Fact]

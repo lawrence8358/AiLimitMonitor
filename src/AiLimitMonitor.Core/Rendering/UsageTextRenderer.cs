@@ -35,7 +35,8 @@ public sealed class UsageTextRenderer(TimeZoneInfo? timeZone = null)
                 continue;
             }
 
-            if (provider.Windows.Count == 0 && provider.Notes.Count == 0)
+            if (provider.Windows.Count == 0 && provider.Notes.Count == 0 &&
+                provider.ResetCredits is not { AvailableCount: > 0 })
             {
                 sb.AppendLine("  no usage data");
                 continue;
@@ -47,8 +48,48 @@ public sealed class UsageTextRenderer(TimeZoneInfo? timeZone = null)
 
             foreach (var note in provider.Notes)
                 sb.AppendLine($"  {note}");
+
+            if (provider.ResetCredits is { AvailableCount: > 0 } resetCredits)
+                RenderResetCredits(sb, resetCredits, labelWidth, snapshot.Timestamp);
         }
         return sb.ToString();
+    }
+
+    private void RenderResetCredits(
+        StringBuilder sb, ResetCredits resetCredits, int labelWidth, DateTimeOffset now)
+    {
+        var credits = resetCredits.Credits;
+        var summary = $"  reset credits: {resetCredits.AvailableCount} available";
+        if (credits is null || credits.Count == 0)
+        {
+            sb.AppendLine(summary);
+            return;
+        }
+
+        var timingColumn = WindowPrefixWidth(labelWidth) + 4;
+        // The backend may cap detail rows below available_count. Only attach an expiration to
+        // the summary itself when it unambiguously describes the sole available credit.
+        if (resetCredits.AvailableCount == 1 && credits.Count == 1)
+        {
+            var suffix = ExpirationText(credits[0].ExpiresAt, now);
+            sb.AppendLine($"{summary.PadRight(timingColumn)}{suffix}");
+            return;
+        }
+
+        sb.AppendLine(summary);
+        for (var i = 0; i < credits.Count; i++)
+        {
+            var creditLabel = $"    credit {i + 1}:";
+            sb.AppendLine($"{creditLabel.PadRight(timingColumn)}{ExpirationText(credits[i].ExpiresAt, now)}");
+        }
+    }
+
+    private string ExpirationText(DateTimeOffset? expiresAt, DateTimeOffset now)
+    {
+        if (expiresAt is not { } expiration)
+            return "does not expire";
+        var remaining = TimeFormat.Duration(expiration - now);
+        return TimingText("expires", remaining, expiration);
     }
 
     private string RenderWindow(UsageWindow window, int labelWidth, DateTimeOffset now)
@@ -57,10 +98,16 @@ public sealed class UsageTextRenderer(TimeZoneInfo? timeZone = null)
         if (window.ResetsAt is { } resetsAt)
         {
             var remaining = TimeFormat.Duration(resetsAt - now);
-            line += $"    resets in {remaining,-8} ({TimeFormat.ResetStamp(resetsAt, _timeZone)})";
+            line += $"    {TimingText("resets", remaining, resetsAt)}";
         }
         return line;
     }
+
+    private string TimingText(string action, string remaining, DateTimeOffset at) =>
+        $"{action + " in",-11}{remaining,-8} ({TimeFormat.ResetStamp(at, _timeZone)})";
+
+    private static int WindowPrefixWidth(int labelWidth) =>
+        $"  {string.Empty.PadRight(labelWidth)} [{new string(' ', BarWidth)}] {0,5:0.0}% used".Length;
 
     public static string Bar(double percent, int width = BarWidth)
     {

@@ -163,7 +163,42 @@ public class CodexParsingTests
     {
         var usage = CodexUsageProvider.ParseUsage("codex", SampleUsage, Now);
 
-        Assert.Equal("reset credits: 1 available", Assert.Single(usage.Notes));
+        Assert.Equal(1, usage.ResetCredits!.AvailableCount);
+        Assert.Null(usage.ResetCredits.Credits);
+        Assert.Empty(usage.Notes);
+    }
+
+    [Fact]
+    public void ParseResetCredits_reads_available_expirations_and_sorts_earliest_first()
+    {
+        var credits = CodexUsageProvider.ParseResetCredits("""
+            {
+              "available_count": 4,
+              "credits": [
+                { "status": "available", "expires_at": null },
+                { "status": "redeemed", "expires_at": "2026-08-09T00:00:00Z" },
+                { "status": "future_status", "expires_at": "2026-09-18T00:00:00Z" },
+                { "status": "available", "expires_at": "2026-09-17T00:00:00Z" },
+                { "status": "available", "expires_at": 1789516800 }
+              ]
+            }
+            """, 1);
+
+        Assert.Equal(4, credits.AvailableCount);
+        Assert.Equal(4, credits.Credits!.Count);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1789516800), credits.Credits[0].ExpiresAt);
+        Assert.Equal(new DateTimeOffset(2026, 9, 17, 0, 0, 0, TimeSpan.Zero), credits.Credits[1].ExpiresAt);
+        Assert.Equal(new DateTimeOffset(2026, 9, 18, 0, 0, 0, TimeSpan.Zero), credits.Credits[2].ExpiresAt);
+        Assert.Null(credits.Credits[3].ExpiresAt);
+    }
+
+    [Fact]
+    public void ParseResetCredits_uses_summary_count_when_detail_count_is_missing()
+    {
+        var credits = CodexUsageProvider.ParseResetCredits("""{ "credits": [] }""", 2);
+
+        Assert.Equal(2, credits.AvailableCount);
+        Assert.Empty(credits.Credits!);
     }
 
     [Fact]
@@ -184,6 +219,7 @@ public class CodexParsingTests
         var window = Assert.Single(usage.Windows);
         Assert.Equal("weekly", window.Label);
         Assert.Empty(usage.Notes);
+        Assert.Null(usage.ResetCredits);
     }
 
     [Theory]

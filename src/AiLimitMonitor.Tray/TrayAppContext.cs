@@ -30,7 +30,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
     public TrayAppContext(SingleInstance instance)
     {
-        _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AiLimitMonitor/1.1");
+        _http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AiLimitMonitor/1.3.0");
         _config = ConfigLoader.LoadOrCreate();
         var providers = ConfigLoader.BuildProviders(_config, _http);
         _service = new UsageMonitorService(providers);

@@ -23,7 +23,7 @@ if (config.Providers.Count == 0)
 }
 
 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AiLimitMonitor/1.1");
+http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AiLimitMonitor/1.3.0");
 var service = new UsageMonitorService(ConfigLoader.BuildProviders(config, http));
 var renderer = new UsageTextRenderer();
 var interval = TimeSpan.FromSeconds(intervalOverride ?? config.RefreshSeconds);

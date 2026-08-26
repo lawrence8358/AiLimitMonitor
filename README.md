@@ -1,6 +1,6 @@
 # AI Limit Monitor
 
-隨時掌握 Claude Code 與 Codex CLI 還剩多少額度的小工具（目前版本 1.1.0），有兩種用法：
+隨時掌握 Claude Code 與 Codex CLI 還剩多少額度的小工具（目前版本 1.3.0），有兩種用法：
 
 - **終端機版**：開一個視窗持續顯示各帳號的剩餘額度
 - **桌面版**：縮在螢幕右下角時鐘旁邊的小圖示，滑鼠移上去就能看，不佔位置
@@ -63,6 +63,7 @@ Claude 的「5 小時額度」有個特性：**從你送出第一句話才開始
 
 - **剩餘時間一目瞭然**：右下角圖示上的數字就是「距離下次額度重置還有多久」（`3h`＝約 3 小時、`58m`＝約 58 分鐘、`2d`＝約 2 天）
 - **滑鼠移上去（或左鍵點一下）**：彈出完整額度資訊，內容與終端機版相同
+- **Codex 重置卷到期日**：有可用重置卷時，終端機版與桌面版彈窗都會顯示每張卷的到期倒數與本機日期；沒有到期日的卷則標示為不會到期
 - **右鍵選單**：
   - `立即更新` — 馬上重新查詢一次
   - `顯示寵物` — 開關資訊視窗邊框上跑來跑去的小寵物 🐹
@@ -87,7 +88,7 @@ claude
 
 codex (team)
   weekly [███████████░]  91.0% used    resets in 65h06m   (Mon 18:04 UTC+8)
-  reset credits: 1 available
+  reset credits: 1 available           expires in 21d 3h   (2026/09/17 08:00 UTC+8)
 ```
 
 ### 專案結構
@@ -117,7 +118,7 @@ dotnet run --project src/AiLimitMonitor.Tray
 
 桌面版操作：圖示上的文字為**距離所有帳號中最近一次重置的剩餘時間**（如 `3h` = 最快到期的視窗約 3 小時後重置，`58m`、`2d` 同理）；滑過或左鍵點擊顯示完整資訊；右鍵選單功能見上方「桌面版功能一覽」。
 
-時間格式：超過一天顯示 `2d 3h`、一小時以上顯示 `4h 42m`、不足一小時顯示 `45m`（不足該單位就不顯示該單位）；重置時間點以台灣慣用格式顯示，如 `(2026/08/08 18:59 UTC+8)`。
+時間格式：超過一天顯示 `2d 3h`、一小時以上顯示 `4h 42m`、不足一小時顯示 `45m`（不足該單位就不顯示該單位）；額度重置與重置卷到期時間都以台灣慣用格式顯示，如 `(2026/08/08 18:59 UTC+8)`。
 
 邊框小寵物 🐹：預設沿邊框順時針跑；CLI 用 `--no-pet`、Tray 用選單「Show pet」關閉。關閉時**邊框仍保留**（只移除寵物），畫面不會跳動。
 
@@ -205,7 +206,9 @@ dotnet run --project src/AiLimitMonitor.Tray
 兩者皆為唯讀 API，不消耗任何額度：
 
 - Claude：`GET https://api.anthropic.com/api/oauth/usage`（token 讀自 config 目錄的 `.credentials.json`）
-- Codex：`GET https://chatgpt.com/backend-api/wham/usage`（token 讀自 `~/.codex/auth.json`）
+- Codex：`GET https://chatgpt.com/backend-api/wham/usage`（token 讀自 `~/.codex/auth.json`）；有可用重置卷時，再以相同憑證讀取 `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` 取得每張卷的到期日
+
+Codex 重置卷明細是附加資訊；若明細端點暫時無法使用，CLI 與 Tray 仍會正常顯示額度和可用卷數，只暫時省略到期日。
 
 Claude 的 access token 過期時會自動用 refresh token 換新並寫回 `.credentials.json`（與 Claude Code 本身的行為一致），不需要手動介入；只有 refresh token 也失效時才需要開 `claude` 重新登入。Codex 的 token 由 Codex CLI 維護，若過期出現 401 請開一次 `codex`。
 

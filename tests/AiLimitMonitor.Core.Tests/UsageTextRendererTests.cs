@@ -23,19 +23,20 @@ public class UsageTextRendererTests
                 ], []),
             new ProviderUsage("codex (plus)",
                 [new UsageWindow("5h", 24.0, Now.AddMinutes(3 * 60 + 15))],
-                ["reset credits: 1 available"]),
+                [], ResetCredits: new ResetCredits(1,
+                    [new ResetCredit(new DateTimeOffset(2026, 9, 17, 0, 0, 0, TimeSpan.Zero))])),
         ]);
 
         var text = new UsageTextRenderer(UtcPlus8).Render(snapshot);
 
         var expected = string.Join(Environment.NewLine,
             "claude",
-            "  5h     [██████░░░░░░]  51.0% used    resets in 3h 14m   (2026/08/09 00:10 UTC+8)",
-            "  weekly [██████░░░░░░]  54.0% used    resets in 7h 04m   (2026/08/09 04:00 UTC+8)",
+            "  5h     [██████░░░░░░]  51.0% used    resets in  3h 14m   (2026/08/09 00:10 UTC+8)",
+            "  weekly [██████░░░░░░]  54.0% used    resets in  7h 04m   (2026/08/09 04:00 UTC+8)",
             "",
             "codex (plus)",
-            "  5h     [███░░░░░░░░░]  24.0% used    resets in 3h 15m   (2026/08/09 00:11 UTC+8)",
-            "  reset credits: 1 available",
+            "  5h     [███░░░░░░░░░]  24.0% used    resets in  3h 15m   (2026/08/09 00:11 UTC+8)",
+            "  reset credits: 1 available           expires in 39d 11h  (2026/09/17 08:00 UTC+8)",
             "");
         Assert.Equal(expected, text);
     }
@@ -61,6 +62,42 @@ public class UsageTextRendererTests
         var text = new UsageTextRenderer(UtcPlus8).Render(snapshot);
 
         Assert.DoesNotContain("resets in", text);
+    }
+
+    [Fact]
+    public void Render_lists_multiple_reset_credit_expirations()
+    {
+        var snapshot = new MonitorSnapshot(Now,
+        [
+            new ProviderUsage("codex", [], [], ResetCredits: new ResetCredits(2,
+            [
+                new ResetCredit(Now.AddDays(2)),
+                new ResetCredit(null),
+            ])),
+        ]);
+
+        var text = new UsageTextRenderer(UtcPlus8).Render(snapshot);
+
+        Assert.DoesNotContain("no usage data", text);
+        Assert.Contains("  reset credits: 2 available", text);
+        Assert.Contains("    credit 1:                          expires in 2d", text);
+        Assert.Contains("    credit 2:                          does not expire", text);
+    }
+
+    [Fact]
+    public void Render_does_not_apply_partial_detail_to_all_available_credits()
+    {
+        var snapshot = new MonitorSnapshot(Now,
+        [
+            new ProviderUsage("codex", [], [], ResetCredits: new ResetCredits(3,
+                [new ResetCredit(Now.AddDays(2))])),
+        ]);
+
+        var text = new UsageTextRenderer(UtcPlus8).Render(snapshot);
+
+        Assert.Contains("  reset credits: 3 available", text);
+        Assert.Contains("    credit 1:                          expires in 2d", text);
+        Assert.DoesNotContain("3 available    expires", text);
     }
 
     [Theory]
