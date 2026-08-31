@@ -194,6 +194,41 @@ public class KeepAliveServiceTests
     }
 
     [Fact]
+    public void TotalTokensFor_reloads_when_log_file_is_updated()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"keepalive-{Guid.NewGuid():N}.log");
+        File.WriteAllLines(path, [
+            "[2026/08/08 15:04:05 +08:00] claude: hello → HTTP 200: Hi! [tokens in=12 out=5 total=17]",
+        ], System.Text.Encoding.UTF8);
+        try
+        {
+            var service = new KeepAliveService([], path);
+            Assert.Equal(new TokenUsage(12, 5), service.TotalTokensFor("claude"));
+
+            // File updated later
+            File.AppendAllLines(path, [
+                "[2026/08/08 20:04:05 +08:00] codex: hello → HTTP 200: Hi! [tokens in=15 out=4 total=19]",
+            ], System.Text.Encoding.UTF8);
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(1));
+
+            Assert.Equal(new TokenUsage(15, 4), service.TotalTokensFor("codex"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void ExtractSseTokenUsage_reads_root_level_usage()
+    {
+        const string sse = "data: {\"type\":\"response.done\",\"usage\":{\"input_tokens\":40,\"output_tokens\":10}}\n\n" +
+                           "data: [DONE]\n";
+
+        Assert.Equal(new TokenUsage(40, 10), CodexUsageProvider.ExtractSseTokenUsage(sse));
+    }
+
+    [Fact]
     public void ExtractTokenUsage_folds_cache_tokens_into_the_input_side()
     {
         const string json = """

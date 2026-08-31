@@ -168,11 +168,14 @@ public sealed class CodexUsageProvider(
             try
             {
                 using var doc = JsonDocument.Parse(payload);
-                if (doc.RootElement.TryGetProperty("type", out var type) &&
-                    type.GetString() == "response.output_text.delta" &&
-                    doc.RootElement.TryGetProperty("delta", out var delta) &&
-                    delta.ValueKind == JsonValueKind.String)
+                if (doc.RootElement.TryGetProperty("delta", out var delta) && delta.ValueKind == JsonValueKind.String)
+                {
                     text.Append(delta.GetString());
+                }
+                else if (doc.RootElement.TryGetProperty("text", out var textProp) && textProp.ValueKind == JsonValueKind.String)
+                {
+                    text.Append(textProp.GetString());
+                }
             }
             catch (JsonException)
             {
@@ -199,10 +202,22 @@ public sealed class CodexUsageProvider(
             try
             {
                 using var doc = JsonDocument.Parse(payload);
-                if (!doc.RootElement.TryGetProperty("response", out var response) ||
-                    !response.TryGetProperty("usage", out var usage) ||
-                    usage.ValueKind != JsonValueKind.Object)
+                JsonElement usage;
+                if (doc.RootElement.TryGetProperty("response", out var response) &&
+                    response.TryGetProperty("usage", out var resUsage) &&
+                    resUsage.ValueKind == JsonValueKind.Object)
+                {
+                    usage = resUsage;
+                }
+                else if (doc.RootElement.TryGetProperty("usage", out var rootUsage) &&
+                         rootUsage.ValueKind == JsonValueKind.Object)
+                {
+                    usage = rootUsage;
+                }
+                else
+                {
                     continue;
+                }
                 return new TokenUsage(Number(usage, "input_tokens"), Number(usage, "output_tokens"));
             }
             catch (JsonException)

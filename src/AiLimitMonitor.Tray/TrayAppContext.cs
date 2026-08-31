@@ -97,14 +97,16 @@ internal sealed class TrayAppContext : ApplicationContext
                 providerConfig.KeepAlive = providerItem.Checked;
                 ConfigLoader.Save(_config);
             };
-            // How much quota the helloes have burned so far, refreshed each time the menu opens.
-            keepAliveMenu.DropDownOpening += (_, _) =>
+            void UpdateItemText()
             {
                 var total = _keepAlive.TotalTokensFor(providerConfig.Name);
                 providerItem.Text = total is null
-                    ? providerConfig.Name
+                    ? $"{providerConfig.Name}（尚未有呼叫紀錄）"
                     : $"{providerConfig.Name}（累計 token 輸入 {total.InputTokens:N0}／輸出 {total.OutputTokens:N0}）";
-            };
+            }
+            UpdateItemText();
+            // How much quota the helloes have burned so far, refreshed each time the menu opens.
+            keepAliveMenu.DropDownOpening += (_, _) => UpdateItemText();
             keepAliveMenu.DropDownItems.Add(providerItem);
         }
         menu.Items.Add(keepAliveMenu);

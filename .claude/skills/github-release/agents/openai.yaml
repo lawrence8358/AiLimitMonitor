@@ -1,0 +1,5 @@
+﻿interface:
+  display_name: "GitHub Release"
+  short_description: "Generate Git commit messages and GitHub Release notes"
+policy:
+  allow_implicit_invocation: true

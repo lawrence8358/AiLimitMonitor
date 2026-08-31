@@ -44,7 +44,6 @@ public sealed class KeepAliveService(
     /// <summary>Tokens burned per provider so far. Seeded from the existing log on first write,
     /// so the running total survives a restart instead of starting over at zero.</summary>
     private readonly Dictionary<string, TokenUsage> _totals = [];
-    private bool _totalsLoaded;
 
     public string LogPath => logPath;
 
@@ -149,6 +148,7 @@ public sealed class KeepAliveService(
         try
         {
             File.AppendAllText(logPath, line + Environment.NewLine, Encoding.UTF8);
+            _lastLoadedWriteTime = File.GetLastWriteTimeUtc(logPath);
         }
         catch (IOException)
         {
@@ -175,33 +175,35 @@ public sealed class KeepAliveService(
         return line;
     }
 
+    private DateTime? _lastLoadedWriteTime;
+
     /// <summary>Reads the per-call token counts already written to the log so the running total
     /// continues across restarts. A missing or unreadable log simply starts the totals at zero.</summary>
     private void LoadTotals()
     {
-        if (_totalsLoaded)
-            return;
-        _totalsLoaded = true;
-
-        string[] lines;
         try
         {
             if (!File.Exists(logPath))
                 return;
-            lines = File.ReadAllLines(logPath, Encoding.UTF8);
+
+            var lastWrite = File.GetLastWriteTimeUtc(logPath);
+            if (_lastLoadedWriteTime == lastWrite)
+                return;
+
+            var lines = File.ReadAllLines(logPath, Encoding.UTF8);
+            _totals.Clear();
+            foreach (var line in lines)
+            {
+                if (ParseLoggedTokens(line) is not { } entry)
+                    continue;
+                _totals[entry.Provider] = _totals.TryGetValue(entry.Provider, out var previous)
+                    ? previous + entry.Tokens
+                    : entry.Tokens;
+            }
+            _lastLoadedWriteTime = File.GetLastWriteTimeUtc(logPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return;
-        }
-
-        foreach (var line in lines)
-        {
-            if (ParseLoggedTokens(line) is not { } entry)
-                continue;
-            _totals[entry.Provider] = _totals.TryGetValue(entry.Provider, out var previous)
-                ? previous + entry.Tokens
-                : entry.Tokens;
         }
     }
 
