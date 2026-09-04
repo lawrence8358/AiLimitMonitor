@@ -103,12 +103,21 @@ public sealed class KeepAliveService(
     }
 
     /// <summary>
+    /// How far short of a full window length the reset time may fall and the window still
+    /// count as untouched. Absorbs the round trip between the platform stamping the reset time
+    /// and us comparing it against our own clock. Anything larger is real elapsed time, and
+    /// <see cref="Cooldown"/> is far longer still, so a just-sent hello can never be mistaken
+    /// for an idle window on the next pass.
+    /// </summary>
+    public static readonly TimeSpan IdleWindowTolerance = TimeSpan.FromMinutes(1);
+
+    /// <summary>
     /// Decides what to do for one provider. SendHello requires: the fetch succeeded, the plan
     /// actually reports a 5h window (weekly-only plans — e.g. codex team — are never pinged),
     /// no window sits at an unreset 100% (the hello would be rejected and only spam the log),
-    /// the 5h window is not currently running (no reset time, or the reset time has passed),
-    /// and it reads 0% used. A non-running 5h window with usage &gt; 0 yields SkipInUse so the
-    /// log shows why no call was made.
+    /// the 5h window is not currently running (see <see cref="IsRunning"/>), and it reads 0%
+    /// used. A non-running 5h window with usage &gt; 0 yields SkipInUse so the log shows why no
+    /// call was made.
     /// </summary>
     public static KeepAliveDecision Evaluate(ProviderUsage usage, DateTimeOffset now, out double usedPercent)
     {
@@ -123,7 +132,7 @@ public sealed class KeepAliveService(
                 return KeepAliveDecision.None;
             if (w.Label != "5h")
                 continue;
-            if (w.ResetsAt is { } resetsAt && resetsAt > now)
+            if (IsRunning(w, now))
                 return KeepAliveDecision.None;
             fiveHour = w;
         }
@@ -132,6 +141,24 @@ public sealed class KeepAliveService(
 
         usedPercent = fiveHour.UsedPercent;
         return fiveHour.UsedPercent > 0 ? KeepAliveDecision.SkipInUse : KeepAliveDecision.SendHello;
+    }
+
+    /// <summary>
+    /// Whether the window's clock is currently counting down.
+    /// <para>
+    /// Platforms disagree on how they say "not started". Claude simply omits the reset time
+    /// until the first request lands, so a reset time in the future means running. Codex always
+    /// answers with one — an untouched window reports a reset a full <see cref="UsageWindow.Length"/>
+    /// away, and only starts shrinking once a request lands — so for a window that reports its
+    /// length, "running" means the reset is nearer than that full length. Reading codex the
+    /// claude way is what kept its keep-alive permanently silent: the reset was always ahead.
+    /// </para>
+    /// </summary>
+    public static bool IsRunning(UsageWindow window, DateTimeOffset now)
+    {
+        if (window.ResetsAt is not { } resetsAt || resetsAt <= now)
+            return false;
+        return window.Length is not { } length || resetsAt < now + length - IdleWindowTolerance;
     }
 
     private void AppendLog(DateTimeOffset now, string providerName, KeepAliveResult result)

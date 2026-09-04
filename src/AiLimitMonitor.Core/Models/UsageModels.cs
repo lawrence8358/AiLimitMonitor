@@ -1,7 +1,15 @@
 namespace AiLimitMonitor.Core.Models;
 
 /// <summary>One rate-limit window, e.g. "5h" or "weekly".</summary>
-public sealed record UsageWindow(string Label, double UsedPercent, DateTimeOffset? ResetsAt);
+/// <param name="Length">
+/// The window's full duration, when the platform reports it. Codex always hands back a
+/// <see cref="ResetsAt"/> in the future — an untouched window simply resets one full length
+/// from now — so the reset time alone cannot say whether the window is actually counting.
+/// Knowing the length makes that answerable: a window whose reset is a full length away has
+/// not started. Null for platforms that omit the reset time entirely while idle (claude).
+/// </param>
+public sealed record UsageWindow(
+    string Label, double UsedPercent, DateTimeOffset? ResetsAt, TimeSpan? Length = null);
 
 /// <summary>One available Codex rate-limit reset credit and its optional expiration.</summary>
 public sealed record ResetCredit(DateTimeOffset? ExpiresAt);

@@ -19,7 +19,7 @@ public sealed class CodexUsageProvider(
 
     /// <summary>Cheapest (mini-tier) Codex model — ChatGPT accounts only accept the slugs the
     /// Codex CLI itself offers. Overridable per provider via config (keepAliveModel).</summary>
-    public const string DefaultKeepAliveModel = "gpt-5.6-luna";
+    public const string DefaultKeepAliveModel = "gpt-5.4-mini";
 
     public const string HelloText = "Hello，請不要有任何回應";
 
@@ -364,7 +364,8 @@ public sealed class CodexUsageProvider(
         else if (el.TryGetProperty("reset_after_seconds", out var after) && after.ValueKind == JsonValueKind.Number)
             resetsAt = now.AddSeconds(after.GetDouble());
 
-        windows.Add(new UsageWindow(WindowLabel(windowSeconds), percent, resetsAt));
+        windows.Add(new UsageWindow(WindowLabel(windowSeconds), percent, resetsAt,
+            windowSeconds > 0 ? TimeSpan.FromSeconds(windowSeconds) : null));
     }
 
     public static string WindowLabel(long windowSeconds) => windowSeconds switch

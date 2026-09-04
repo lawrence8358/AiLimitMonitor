@@ -66,6 +66,39 @@ public class KeepAliveServiceTests
     }
 
     [Fact]
+    public void Sends_hello_when_codex_reports_an_untouched_window_a_full_length_ahead()
+    {
+        // Codex never omits reset_at: an untouched 5h window simply resets 5h from now, so
+        // reading it the claude way ("reset in the future = running") silenced codex forever.
+        // Observed live 2026/09/04: used_percent 0, reset_after_seconds 18000.
+        var window = new UsageWindow("5h", 0, Now.AddHours(5), TimeSpan.FromHours(5));
+
+        Assert.Equal(KeepAliveDecision.SendHello, Evaluate(Usage(window), out _));
+    }
+
+    [Fact]
+    public void DoesNothing_when_codex_window_has_started_counting_but_still_reads_zero_percent()
+    {
+        // The hello is too small to move used_percent off 0 (observed live 2026/09/04), so the
+        // only trace that the window is running is its reset drifting in from the full length.
+        // The first minutes of that drift are inside IdleWindowTolerance and are covered by
+        // Cooldown instead; from then on the elapsed time itself is the signal.
+        var window = new UsageWindow("5h", 0, Now.AddHours(5) - KeepAliveService.Cooldown, TimeSpan.FromHours(5));
+
+        Assert.Equal(KeepAliveDecision.None, Evaluate(Usage(window), out _));
+    }
+
+    [Fact]
+    public void Sends_hello_when_codex_reset_lags_the_full_length_only_by_round_trip_delay()
+    {
+        // The platform stamps reset_at before we compare it to our own clock, so an untouched
+        // window lands a shade under a full length ahead. That gap must not read as usage.
+        var window = new UsageWindow("5h", 0, Now.AddHours(5).AddSeconds(-2), TimeSpan.FromHours(5));
+
+        Assert.Equal(KeepAliveDecision.SendHello, Evaluate(Usage(window), out _));
+    }
+
+    [Fact]
     public void DoesNothing_when_any_window_is_exhausted()
     {
         // e.g. weekly at 100%: the hello would be rejected anyway.
