@@ -17,9 +17,10 @@ public sealed class CodexUsageProvider(
     public const string ResetCreditsUrl = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
     public const string ResponsesUrl = "https://chatgpt.com/backend-api/codex/responses";
 
-    /// <summary>Cheapest (mini-tier) Codex model — ChatGPT accounts only accept the slugs the
-    /// Codex CLI itself offers. Overridable per provider via config (keepAliveModel).</summary>
-    public const string DefaultKeepAliveModel = "gpt-5.4-mini";
+    /// <summary>Cheapest/fastest Codex model — ChatGPT accounts only accept the slugs the
+    /// Codex CLI itself offers (see ~/.codex/models_cache.json). Overridable per provider via
+    /// config (keepAliveModel) when the lineup changes again.</summary>
+    public const string DefaultKeepAliveModel = "gpt-5.6-luna";
 
     public const string HelloText = "Hello，請不要有任何回應";
 

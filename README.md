@@ -183,7 +183,7 @@ dotnet run --project src/AiLimitMonitor.Tray
     { "type": "claude", "name": "claude", "configDir": "~/.claude",
       "keepAlive": true, "keepAliveModel": "claude-haiku-4-5-20251001" },
     { "type": "codex", "name": "codex", "authPath": "~/.codex/auth.json",
-      "keepAlive": false, "keepAliveModel": "gpt-5.4-mini" }
+      "keepAlive": false, "keepAliveModel": "gpt-5.6-luna" }
   ]
 }
 ```
@@ -195,7 +195,7 @@ dotnet run --project src/AiLimitMonitor.Tray
 | `keepAliveSchedule.rules[].days` | 排程規則 | — | 規則適用的星期，可複選；跨日時代表區間開始的星期 |
 | `keepAliveSchedule.rules[].start` / `end` | 排程規則 | — | 本機時間的 `HH:mm`。開始時間包含、結束時間不包含；結束早於開始代表跨日，例如星期五 `22:00～02:00` 會延續至星期六凌晨 |
 | `keepAlive` | provider | claude 為 `true`、其他為 `false` | 該帳號是否參與自動 hello，等同子選單的帳號勾選；省略時採用預設值 |
-| `keepAliveModel` | provider | claude：`claude-haiku-4-5-20251001`<br>codex：`gpt-5.4-mini` | 送 hello 時使用的模型，預設挑最便宜的。日後模型更名導致呼叫失敗時（`keepalive.log` 的回應欄看得到錯誤），改這個欄位即可，不用等程式更新。codex 只能填 ChatGPT 帳號可用的 Codex 模型代號（可參考 `~/.codex/models_cache.json` 的 `slug` 清單） |
+| `keepAliveModel` | provider | claude：`claude-haiku-4-5-20251001`<br>codex：`gpt-5.6-luna` | 送 hello 時使用的模型，預設挑最便宜的。日後模型更名導致呼叫失敗時（`keepalive.log` 的回應欄看得到錯誤），改這個欄位即可，不用等程式更新。codex 只能填 ChatGPT 帳號可用的 Codex 模型代號（可參考 `~/.codex/models_cache.json` 的 `slug` 清單） |
 
 多條排程規則採 OR 判斷，符合任一條就允許呼叫。時間依 Windows 本機時區判斷；這項限制只控制 hello，使用量查詢仍依 `refreshSeconds` 持續執行，因此進入允許區間後會在下一次刷新時判斷，而不是保證整點立刻呼叫。
 
